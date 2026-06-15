@@ -116,6 +116,21 @@ supported yet.
   transcript to the LLM provider you configured.
 - Contacts and API keys live under `~/.config/msgpull/` and are git-ignored.
 
+## Tests
+
+```sh
+python3 -m unittest
+```
+
+No dependencies and no setup — the suite builds a synthetic database, so it runs
+without Full Disk Access or any real messages.
+
+## Contributing
+
+Issues and PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) — the short version
+is: keep it single-file and dependency-free, never write to the Messages database,
+and don't add network calls beyond the opt-in `--ask`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
