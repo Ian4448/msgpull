@@ -1,0 +1,10 @@
+# Never commit personal data
+contacts.json
+config.json
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+msgpull_*/
+__pycache__/
+*.pyc
+.DS_Store
