@@ -1,7 +1,8 @@
 # msgpull
 
-Pull the last N texts with someone out of macOS Messages and put them on your
-clipboard, formatted for pasting into an LLM (or anywhere else).
+A command-line tool that pulls the last N texts with someone out of macOS
+Messages and puts them on your clipboard, formatted for pasting into an LLM
+(or anywhere else).
 
 I kept hand-copying chunks of conversations into chat assistants to get them
 summarized. This does it in one command. It reads the Messages database the
@@ -14,9 +15,29 @@ is uploaded and the database is opened read-only.
 - Python 3.9+
 - Full Disk Access for your terminal — the Messages database is protected by macOS
 
-## Setup
+## Install
 
-Grant Full Disk Access so the database is readable:
+Clone the repo and link the script onto your `PATH`:
+
+```sh
+git clone https://github.com/Ian4448/msgpull.git ~/tools/msgpull
+cd ~/tools/msgpull
+chmod +x msgpull.py
+mkdir -p ~/.local/bin
+ln -s "$PWD/msgpull.py" ~/.local/bin/msgpull
+```
+
+Make sure `~/.local/bin` is on your `PATH` (most shells already have it; if not,
+add `export PATH="$HOME/.local/bin:$PATH"` to your `~/.zshrc`). Then `msgpull`
+works from anywhere. To update later: `cd ~/tools/msgpull && git pull`.
+
+It's a single script — you can also just run `./msgpull.py …` from the repo
+without linking it.
+
+### Grant Full Disk Access
+
+The Messages database is protected by macOS, so your terminal needs Full Disk
+Access:
 
 > System Settings → Privacy & Security → Full Disk Access → add your terminal
 > (Terminal, iTerm, VS Code…), then quit and reopen it.
@@ -28,13 +49,6 @@ sqlite3 ~/Library/Messages/chat.db "select count(*) from message;"
 ```
 
 A number means you're good. `authorization denied` means access isn't granted yet.
-
-Put it on your PATH:
-
-```sh
-chmod +x msgpull.py
-ln -s "$PWD/msgpull.py" ~/.local/bin/msgpull   # or anywhere on your PATH
-```
 
 ## Usage
 
