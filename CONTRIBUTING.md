@@ -30,6 +30,15 @@ If you change anything around contact resolution, conversation scoping, the
 `attributedBody` decoder, or timestamp math, add or update a test for it. Those
 are the parts that have bitten us before.
 
+## Layout
+
+- `msgpull.py` — the CLI and the shared library functions (`pull_transcript`,
+  `open_source`, `resolve_contact`, …). Errors raise `MsgpullError`; only
+  `main()` turns that into an exit code, so the functions stay reusable.
+- `mcp_server.py` — a stdlib MCP server (JSON-RPC over stdio) that wraps those
+  functions. Keep it dependency-free too; if you add a tool, update its schema
+  and add a handshake/smoke test.
+
 ## Style
 
 - Match the surrounding code: plain functions, short docstrings, no framework.

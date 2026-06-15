@@ -100,6 +100,31 @@ call with `--provider` / `--model`. Keys come from `GEMINI_API_KEY` /
 committed). Requests go to the provider's REST API over the standard library —
 no SDKs to install.
 
+## Use it from an assistant (MCP)
+
+`mcp_server.py` exposes the same functionality as an [MCP](https://modelcontextprotocol.io)
+server, so a client like Claude Desktop can pull conversations itself — no
+copy-paste, no `--ask`. It's stdlib-only (no install) and reuses the CLI's code.
+
+Add it to your client's MCP config. For Claude Desktop
+(`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "msgpull": {
+      "command": "python3",
+      "args": ["/absolute/path/to/msgpull/mcp_server.py"]
+    }
+  }
+}
+```
+
+Restart the client. It gets three tools: `get_messages`, `list_conversations`,
+and `list_contacts`. The server still needs Full Disk Access (it runs as you) and
+reads the database read-only. Note that tool results are visible to whatever
+client you connect — only point it at assistants you trust with your messages.
+
 ## Sources
 
 msgpull reads the live Messages database on your Mac by default, and prints which

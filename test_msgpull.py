@@ -6,8 +6,11 @@ Run from the repo root:
 
 import json
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import msgpull
@@ -219,6 +222,46 @@ class DatabaseQueries(unittest.TestCase):
         bodies = [r[2] for r in rows]
         self.assertEqual(bodies, ["1:1 from Alex", "1:1 from me"])  # no group noise
         self.assertNotIn("group noise", bodies)
+
+    def test_pull_transcript_end_to_end(self):
+        with unittest.mock.patch.object(msgpull, "load_contacts", return_value={}):
+            out = msgpull.pull_transcript("+14155550123", count=50, db_path=self.tmp)
+        self.assertIn("# Conversation with +14155550123", out)
+        self.assertIn("1:1 from Alex", out)
+        self.assertNotIn("group noise", out)
+
+    def test_pull_transcript_unknown_contact_raises(self):
+        with unittest.mock.patch.object(msgpull, "load_contacts", return_value={}):
+            with self.assertRaises(msgpull.MsgpullError):
+                msgpull.pull_transcript("9998887777", db_path=self.tmp)
+
+
+class McpServer(unittest.TestCase):
+    """Drive the stdio MCP server through a minimal JSON-RPC handshake."""
+
+    def _rpc(self, messages):
+        here = Path(__file__).resolve().parent
+        inp = "".join(json.dumps(m) + "\n" for m in messages)
+        proc = subprocess.run([sys.executable, str(here / "mcp_server.py")],
+                              input=inp, capture_output=True, text=True, timeout=30)
+        return [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+
+    def test_initialize_and_tools_list(self):
+        out = self._rpc([
+            {"jsonrpc": "2.0", "id": 0, "method": "initialize",
+             "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                        "clientInfo": {"name": "t", "version": "1"}}},
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        ])
+        init = next(r for r in out if r.get("id") == 0)
+        self.assertEqual(init["result"]["serverInfo"]["name"], "msgpull")
+        tools = next(r for r in out if r.get("id") == 1)["result"]["tools"]
+        self.assertEqual({t["name"] for t in tools},
+                         {"get_messages", "list_conversations", "list_contacts"})
+
+    def test_unknown_method_returns_jsonrpc_error(self):
+        out = self._rpc([{"jsonrpc": "2.0", "id": 9, "method": "no/such/method"}])
+        self.assertEqual(out[0]["error"]["code"], -32601)
 
 
 if __name__ == "__main__":

@@ -72,9 +72,13 @@ APPLE_EPOCH = 978307200
 # --------------------------------------------------------------------------- #
 # Small helpers
 # --------------------------------------------------------------------------- #
+class MsgpullError(Exception):
+    """Raised for expected, user-facing failures. main() turns it into exit 1;
+    library callers (e.g. the MCP server) can catch it instead."""
+
+
 def die(msg, code=1):
-    print(f"msgpull: {msg}", file=sys.stderr)
-    sys.exit(code)
+    raise MsgpullError(msg)
 
 
 def is_number_or_email(s):
@@ -529,6 +533,7 @@ def find_handle_rowids(con, target):
 
 
 def list_conversations(con, contacts, limit=30):
+    """Return a text listing of the most recently active conversations."""
     cur = con.cursor()
     cur.execute(
         """
@@ -542,12 +547,13 @@ def list_conversations(con, contacts, limit=30):
         (limit,),
     )
     by_number = {normalize_number(v): k for k, v in contacts.items()}
-    print("Recent conversations:", file=sys.stderr)
+    lines = ["Recent conversations:"]
     for hid, last in cur.fetchall():
         name = by_number.get(normalize_number(hid), "")
         when = fmt_time(apple_time_to_unix(last))
         label = f"{name}  " if name else ""
-        print(f"  {label}{hid:<22} (last: {when})")
+        lines.append(f"  {label}{hid:<22} (last: {when})")
+    return "\n".join(lines)
 
 
 def resolve_chats(con, handle_rowids):
@@ -647,9 +653,12 @@ def build_output(rows, display_name, number, target, contacts, is_group, as_json
     return "\n".join(lines)
 
 
-def handle_pull(args):
-    db_path = CHAT_DB
-    if args.source == "backup":
+def open_source(source):
+    """Resolve a source ("mac" or "backup") to a readable DB path + a note.
+
+    Returns (db_path, note). Raises MsgpullError on missing/encrypted sources.
+    """
+    if source == "backup":
         backup = latest_backup_dir()
         if not backup:
             die("no iPhone backup found for --source backup. Check: msgpull status")
@@ -660,84 +669,101 @@ def handle_pull(args):
         if meta["encrypted"]:
             die(f"backup {backup.name[:8]}… is encrypted; v1 can't read it. "
                 "Make an unencrypted Finder backup.")
-        print(f"Source: iPhone backup from {fmt_date(meta['date'])}", file=sys.stderr)
-        db_path = stage_db(src)
-    else:
-        if not CHAT_DB.exists():
-            die(f"{CHAT_DB} not found.")
-        mtime = datetime.fromtimestamp(CHAT_DB.stat().st_mtime)
-        print(f"Source: Mac live Messages DB (updated {fmt_date(mtime)})", file=sys.stderr)
+        return stage_db(src), f"iPhone backup from {fmt_date(meta['date'])}"
+    if not CHAT_DB.exists():
+        die(f"{CHAT_DB} not found.")
+    mtime = datetime.fromtimestamp(CHAT_DB.stat().st_mtime)
+    return CHAT_DB, f"Mac live Messages DB (updated {fmt_date(mtime)})"
 
-    con = connect_ro(db_path)
-    contacts = load_contacts()
 
-    if args.list:
-        list_conversations(con, contacts)
-        return
-
-    if not args.contact:
-        die("usage: msgpull CONTACT [COUNT]  (or: msgpull --list)")
-
-    # Resolve the contact to a phone/email target.
-    target = args.contact
-    display_name = args.contact
+def resolve_contact(con, contact, contacts):
+    """Resolve a name/alias/number/email to (target, display_name, handle_rowids)."""
+    target = contact
+    display_name = contact
     if not is_number_or_email(target):
         resolved = resolve_alias(target, contacts)
         if resolved:
             target = resolved
         # else fall through: treat as substring against handle ids below
     else:
-        # use a saved name for display if we have one
         by_number = {normalize_number(v): k for k, v in contacts.items()}
         display_name = by_number.get(normalize_number(target), target)
 
     matches, all_handles = find_handle_rowids(con, target)
+    if matches:
+        return target, display_name, matches
 
-    if not matches:
-        # substring fallback against raw handle ids
-        sub = [(rid, hid) for rid, hid in all_handles if target.lower() in (hid or "").lower()]
-        distinct = sorted({hid for _, hid in sub})
-        if not sub:
-            die(f"no conversation found matching '{args.contact}'. Try: msgpull --list")
-        if len(distinct) > 1:
-            print(f"'{args.contact}' matches multiple handles:", file=sys.stderr)
-            for hid in distinct:
-                print(f"  {hid}", file=sys.stderr)
-            die("be more specific or pass the exact number/email.")
-        matches = [rid for rid, _ in sub]
-        target = distinct[0]
-        by_number = {normalize_number(v): k for k, v in contacts.items()}
-        display_name = by_number.get(normalize_number(target), target)
+    # substring fallback against raw handle ids
+    sub = [(rid, hid) for rid, hid in all_handles if target.lower() in (hid or "").lower()]
+    distinct = sorted({hid for _, hid in sub})
+    if not sub:
+        die(f"no conversation found matching '{contact}'. Try: msgpull --list")
+    if len(distinct) > 1:
+        listing = "\n  ".join(distinct)
+        die(f"'{contact}' matches multiple handles:\n  {listing}\n"
+            "be more specific or pass the exact number/email.")
+    matches = [rid for rid, _ in sub]
+    target = distinct[0]
+    by_number = {normalize_number(v): k for k, v in contacts.items()}
+    display_name = by_number.get(normalize_number(target), target)
+    return target, display_name, matches
 
-    chat_ids, is_group = resolve_chats(con, matches)
-    if not chat_ids:
-        die(f"no conversation found for '{args.contact}'. Try: msgpull --list")
 
-    since_unix = None
-    if args.days is not None:
-        since_unix = datetime.now().timestamp() - args.days * 86400
+def pull_transcript(contact, count=50, days=None, source="mac", as_json=False, db_path=None):
+    """Library entry point: return the formatted transcript for a contact.
 
-    rows = fetch_messages(con, chat_ids, args.count, since_unix)
-    con.close()
+    Shared by the CLI and the MCP server. Raises MsgpullError on any failure.
+    Pass db_path to reuse an already-opened source (avoids re-staging a backup).
+    """
+    if db_path is None:
+        db_path, _ = open_source(source)
+    con = connect_ro(db_path)
+    try:
+        contacts = load_contacts()
+        target, display_name, matches = resolve_contact(con, contact, contacts)
+        chat_ids, is_group = resolve_chats(con, matches)
+        if not chat_ids:
+            die(f"no conversation found for '{contact}'. Try: msgpull --list")
+        since_unix = None if days is None else datetime.now().timestamp() - days * 86400
+        rows = fetch_messages(con, chat_ids, count, since_unix)
+    finally:
+        con.close()
+    out = build_output(rows, display_name, target, target, contacts, is_group, as_json)
+    if not out:
+        die("no messages found for that contact/time window.")
+    return out
+
+
+def handle_pull(args):
+    db_path, note = open_source(args.source)
+    print(f"Source: {note}", file=sys.stderr)
+
+    if args.list:
+        con = connect_ro(db_path)
+        try:
+            print(list_conversations(con, load_contacts()))
+        finally:
+            con.close()
+        return
+
+    if not args.contact:
+        die("usage: msgpull CONTACT [COUNT]  (or: msgpull --list)")
 
     # --ask: send the transcript to an LLM and print/copy its answer.
     if args.ask:
-        transcript = build_output(rows, display_name, target, target, contacts, is_group, False)
-        if not transcript:
-            die("no messages found for that contact/time window.")
+        transcript = pull_transcript(args.contact, args.count, args.days,
+                                     args.source, False, db_path=db_path)
         config = load_config()
         provider = args.provider or config.get("provider", "gemini")
         print(f"Asking {provider}…", file=sys.stderr)
         answer = ask_llm(transcript, args.ask, args, config)
         print(answer)
-        if not args.no_copy:
-            if copy_to_clipboard(answer):
-                print("(answer copied to clipboard)", file=sys.stderr)
+        if not args.no_copy and copy_to_clipboard(answer):
+            print("(answer copied to clipboard)", file=sys.stderr)
         return
 
-    out = build_output(rows, display_name, target, target, contacts, is_group, args.json)
-    if not out:
-        die("no messages found for that contact/time window.")
+    out = pull_transcript(args.contact, args.count, args.days,
+                          args.source, args.json, db_path=db_path)
 
     if args.no_copy or args.json:
         print(out)
@@ -745,7 +771,7 @@ def handle_pull(args):
         if copy_to_clipboard(out):
             n = sum(1 for line in out.splitlines() if line.startswith("["))
             noun = "message" if n == 1 else "messages"
-            print(f"Copied {n} {noun} with {display_name} to clipboard.", file=sys.stderr)
+            print(f"Copied {n} {noun} with {args.contact} to clipboard.", file=sys.stderr)
         else:
             print(out)
 
@@ -753,8 +779,7 @@ def handle_pull(args):
 # --------------------------------------------------------------------------- #
 # CLI entry
 # --------------------------------------------------------------------------- #
-def main():
-    argv = sys.argv[1:]
+def run(argv):
     if argv and argv[0] == "contacts":
         handle_contacts(argv[1:])
         return
@@ -785,6 +810,16 @@ def main():
     parser.add_argument("--model", help="override the LLM model id for --ask")
     args = parser.parse_args(argv)
     handle_pull(args)
+
+
+def main():
+    try:
+        run(sys.argv[1:])
+    except MsgpullError as e:
+        print(f"msgpull: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 if __name__ == "__main__":
